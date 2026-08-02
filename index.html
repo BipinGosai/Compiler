@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Non-Recursive Predictive Parser</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">LL(1) · Table-Driven Parsing</div>
+  <h1>Non-Recursive Predictive Parser</h1>
+  <p class="lede">Enter a grammar and a string, then parse. You'll see the FIRST/FOLLOW sets and parsing table first, then you can step through the parse, auto-play it, or reset.</p>
+
+  <div class="card">
+    <label for="grammarInput">Grammar</label>
+    <textarea id="grammarInput" spellcheck="false">S -> A B C
+A -> a b A'
+A' -> A | eps
+B -> b
+C -> c C'
+C' -> C | eps</textarea>
+    <div class="help">One production per line: <code>LHS -&gt; symbols</code>, alternatives separated by <code>|</code>, symbols separated by spaces, <code>eps</code> for ε. First LHS becomes the start symbol.</div>
+
+    <div class="field-row">
+      <label for="strInput">String to parse</label>
+      <input id="strInput" value="abbcc" spellcheck="false" autocomplete="off">
+    </div>
+
+    <div class="actions">
+      <button class="primary" id="parseBtn">Parse</button>
+    </div>
+    <div id="statusBanner" class="status-banner"></div>
+  </div>
+
+  <div class="card" id="analysisPanel">
+    <div class="analysis-block">
+      <div class="analysis-header">
+        <span class="analysis-title">FIRST / FOLLOW Sets</span>
+        <span class="analysis-sub">computed from the grammar above</span>
+      </div>
+      <div class="table-scroll">
+        <table id="firstFollowTable">
+          <thead><tr><th>Non-terminal</th><th>FIRST</th><th>FOLLOW</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="analysis-block">
+      <div class="analysis-header">
+        <span class="analysis-title">Parsing Table M[A, a]</span>
+        <span class="analysis-sub">— means no entry; red means an LL(1) conflict</span>
+      </div>
+      <div class="table-scroll">
+        <table id="parseTableDisplay">
+          <thead></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="result-panel" id="resultPanel">
+    <div class="panel-head">
+      <div>
+        <div class="panel-title">Parse visualizer</div>
+        <div class="panel-sub">live stack + input state for the grammar and string above</div>
+      </div>
+      <div class="head-chip" id="headChip">ready</div>
+    </div>
+
+    <div class="control-bar">
+      <div class="player-bar">
+      <button id="prevBtn" class="p-btn" title="Previous step"><span class="ic">←</span></button>
+      <button id="playBtn" class="p-btn big" title="Play / Pause">
+        <span class="ic play-ic">▶</span><span class="ic pause-ic">⎱⅂</span>
+      </button>
+      <button id="stepBtn" class="p-btn" title="Next step"><span class="ic">→</span></button>
+      <button id="resetBtn" class="p-btn" title="Reset the trace"><span class="ic">⟲</span></button>
+    </div>
+      <div class="speed-control">
+        <span class="speed-icon"><span class="slow"></span><span class="mid"></span><span class="fast"></span></span>
+        <label for="speedSelect">Speed</label>
+        <div class="seg-select" id="speedSelect" role="group" aria-label="Playback speed">
+          <button data-speed="2400">Slow</button>
+          <button data-speed="1500" class="active">Normal</button>
+          <button data-speed="800">Fast</button>
+        </div>
+      </div>
+    </div>
+
+    <details class="autoplay-help">
+      <summary>How auto-play works</summary>
+      <p><b>Auto-play</b> just clicks "Step ▸" for you on a timer — every step is the same table lookup, stack push/pop,
+      or match you'd get stepping manually, it just happens on its own so you can watch the stack and input change.
+      Click <b>Pause</b> at any point to stop and continue by hand, or lower the speed to "Slow" to read each action
+      before it moves on. It stops automatically once the parse accepts or rejects.</p>
+    </details>
+
+    <div class="results-row">
+      <div class="viz-card unified">
+        <div class="viz-card-head">
+          <span class="dot dot-teal"></span> Visualizer
+          <span class="viz-note">stack drives input consumption</span>
+        </div>
+        <div class="viz-body">
+          <div class="vis-pane">
+            <div class="pane-label">Stack <span>top on top</span></div>
+            <div class="stack-col" id="stackCol"></div>
+          </div>
+          <div class="vis-divider" aria-hidden="true"></div>
+          <div class="vis-pane grow">
+            <div class="pane-label">Input &amp; action</div>
+            <div class="tape" id="tape"></div>
+            <div class="action-readout" id="actionReadout"></div>
+          </div>
+        </div>
+        <div id="verdict" class="verdict"></div>
+      </div>
+
+      <div class="viz-card trace-card">
+        <div class="viz-card-head">
+          <span class="dot dot-amber"></span> Step trace
+          <span class="viz-note">stack · remaining input · action</span>
+        </div>
+        <div class="table-scroll">
+          <table id="traceTable">
+            <thead><tr><th>#</th><th>Stack (bottom → top)</th><th>Remaining input</th><th>Action</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="script.js"></script>
+</body>
+</html>
