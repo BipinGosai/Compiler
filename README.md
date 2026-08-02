@@ -37,7 +37,7 @@ B -> b
 
 ## Live demo
 
-[https://compiler-coral-omega.vercel.app]()
+Import the repo below at [vercel.com/new](https://vercel.com/new) to get a live URL.
 
 ## Getting started locally
 
