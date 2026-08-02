@@ -37,7 +37,7 @@ B -> b
 
 ## Live demo
 
-Import the repo below at [vercel.com/new](https://vercel.com/new) to get a live URL.
+Import the repo below at [vercel.com/new] (https://compiler-ochre-kappa.vercel.app/) to get a live URL.
 
 ## Getting started locally
 
