@@ -15,24 +15,85 @@
   <p class="lede">Enter a grammar and a string, then parse. You'll see the FIRST/FOLLOW sets and parsing table first, then you can step through the parse, auto-play it, or reset.</p>
 
   <div class="card">
-    <label for="grammarInput">Grammar</label>
-    <textarea id="grammarInput" spellcheck="false">S -> A B C
-A -> a b A'
-A' -> A | eps
-B -> b
-C -> c C'
-C' -> C | eps</textarea>
-    <div class="help">One production per line: <code>LHS -&gt; symbols</code>, alternatives separated by <code>|</code>, symbols separated by spaces, <code>eps</code> for ε. First LHS becomes the start symbol.</div>
+    <label for="grammarInput">Grammar <span class="label-note">paste a raw / ambiguous grammar — it gets auto-transformed below</span></label>
+    <textarea id="grammarInput" spellcheck="false">E -> E + T | T
+T -> id * T | id</textarea>
+    <div class="help">One production per line: <code>LHS -&gt; symbols</code>, alternatives separated by <code>|</code>, symbols separated by spaces, <code>eps</code> for ε. First LHS becomes the start symbol. Before building FIRST/FOLLOW and the table, the app automatically eliminates immediate left recursion and left-factors common prefixes, and logs every rewrite. (Try pasting <code>S -&gt; if E then S | if E then S else S</code> to see the residual-ambiguity case.)</div>
 
     <div class="field-row">
       <label for="strInput">String to parse</label>
-      <input id="strInput" value="abbcc" spellcheck="false" autocomplete="off">
+      <input id="strInput" value="id * id + id" spellcheck="false" autocomplete="off">
     </div>
 
     <div class="actions">
       <button class="primary" id="parseBtn">Parse</button>
     </div>
     <div id="statusBanner" class="status-banner"></div>
+  </div>
+
+  <div class="card" id="transformCard">
+    <div class="analysis-header">
+      <span class="analysis-title">Grammar Transformation</span>
+      <span class="analysis-sub">your raw grammar → auto-transformed → LL(1)-ready, with a log of every rewrite</span>
+    </div>
+
+    <div class="transform-block">
+      <div class="analysis-header">
+        <span class="analysis-title small-title">Transformation log</span>
+      </div>
+      <div class="transform-log" id="transformLog"></div>
+    </div>
+
+    <div class="transform-block">
+      <div class="analysis-header">
+        <span class="analysis-title small-title">Auto-transformed grammar</span>
+        <span class="status-pill neutral" id="autoStatus"></span>
+      </div>
+      <pre class="grammar-view" id="autoGrammarView"></pre>
+    </div>
+
+    <div class="residual-box" id="residualBox" hidden>
+      <div class="residual-banner">
+        <span class="residual-ic">⚠</span>
+        <div>
+          <b>Residual ambiguity — requires manual grammar redesign.</b>
+          <p>Left-recursion removal and left factoring ran automatically, but this grammar still has lookahead overlaps
+          that no mechanical rewrite can resolve (the alternatives genuinely describe the same strings). Paste your own
+          LL(1)-equivalent rewrite below and the app will analyze it side by side with the auto-transformed version.</p>
+        </div>
+      </div>
+
+      <div class="compare-grid">
+        <div class="compare-col">
+          <div class="compare-head">
+            <span>Auto-transformed</span>
+            <span class="status-pill bad">still ambiguous</span>
+          </div>
+          <pre class="grammar-view" id="autoCompareGrammar"></pre>
+          <div class="compare-label">FIRST / FOLLOW</div>
+          <div class="table-scroll" id="autoCompareSets"></div>
+          <div class="compare-label">Parsing table <span class="compare-note">red = conflict</span></div>
+          <div class="table-scroll" id="autoCompareTable"></div>
+        </div>
+        <div class="compare-col">
+          <div class="compare-head">
+            <span>Manually redesigned</span>
+            <span class="status-pill neutral" id="manualStatus">not yet applied</span>
+          </div>
+          <textarea id="manualGrammarInput" spellcheck="false"></textarea>
+          <div class="actions">
+            <button id="applyManualBtn" class="primary">Apply manual grammar &amp; analyze</button>
+          </div>
+          <div class="manual-results" id="manualResults" hidden>
+            <pre class="grammar-view" id="manualCompareGrammar"></pre>
+            <div class="compare-label">FIRST / FOLLOW</div>
+            <div class="table-scroll" id="manualCompareSets"></div>
+            <div class="compare-label">Parsing table <span class="compare-note">red = conflict</span></div>
+            <div class="table-scroll" id="manualCompareTable"></div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="card" id="analysisPanel">

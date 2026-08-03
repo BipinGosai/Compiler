@@ -49,6 +49,154 @@ function parseGrammarText(text){
 }
 
 /* ============================================================
+   GRAMMAR TRANSFORMATION
+   Raw/ambiguous grammar → LL(1)-ready, with a human-readable
+   log of every rewrite (displayed in the UI).
+   ============================================================ */
+function escapeHtml(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function fmtAlt(prod){
+  return (prod.length === 1 && prod[0] === EPS) ? EPS : prod.join(' ');
+}
+function fmtProds(nt, prods){
+  return `${nt} → ${prods.map(fmtAlt).join('  |  ')}`;
+}
+function dedupeProds(prods){
+  const seen = new Set(), out = [];
+  for(const p of prods){
+    const key = p.join('\u0000');
+    if(!seen.has(key)){ seen.add(key); out.push(p); }
+  }
+  return out;
+}
+function freshName(base, taken){
+  let name = base, primes = 0;
+  while(taken.has(name)){ primes++; name = base + "'".repeat(primes); }
+  return name;
+}
+function rebuildGrammar(productions, nonterminals, start){
+  const terminals = [];
+  const seen = new Set();
+  for(const nt of nonterminals){
+    for(const prod of productions[nt] || []){
+      for(const sym of prod){
+        if(sym === EPS || nonterminals.includes(sym) || seen.has(sym)) continue;
+        seen.add(sym); terminals.push(sym);
+      }
+    }
+  }
+  return { productions, nonterminals: nonterminals.slice(), start, terminals };
+}
+function grammarToString(grammar){
+  return grammar.nonterminals
+    .map(nt => `${nt} -> ${grammar.productions[nt].map(fmtAlt).join(' | ')}`)
+    .join('\n');
+}
+
+function transformGrammar(grammar){
+  const log = [];
+  const productions = {};
+  grammar.nonterminals.forEach(nt => productions[nt] = grammar.productions[nt].map(p => [...p]));
+  const nonterminals = [...grammar.nonterminals];
+  const start = grammar.start;
+  const taken = new Set(nonterminals);
+  const addNT = (after, name) => {
+    const idx = nonterminals.indexOf(after);
+    nonterminals.splice(idx + 1, 0, name);
+    taken.add(name);
+  };
+
+  /* ---- Step 1: immediate left-recursion elimination ---- */
+  log.push({ step:'note',
+    text:'Step 1 — eliminate immediate left recursion: every A → Aα₁ | … | Aαₖ | β₁ | … | βₘ  becomes  A → βA′ , A′ → αA′ | ε' });
+
+  let removed = 0;
+  for(const A of [...nonterminals]){
+    const prods = productions[A] || [];
+    const alphas = prods.filter(p => p[0] === A);
+    const betas  = prods.filter(p => p[0] !== A);
+    if(alphas.length === 0) continue;
+    if(betas.length === 0){
+      log.push({ step:'warn',
+        text:`${A}: every alternative starts with ${A}, so there is no non-recursive base case. Left as-is (this nonterminal can never terminate).` });
+      continue;
+    }
+    const Ap = freshName(A, taken);
+    const newA = betas.map(beta =>
+      (beta.length === 1 && beta[0] === EPS) ? [Ap] : [...beta, Ap]);
+    const primeProds = [];
+    for(const alpha of alphas){
+      const rest = alpha.slice(1);
+      if(rest.length === 0) continue;
+      if(rest.length === 1 && rest[0] === EPS) continue;
+      primeProds.push([...rest, Ap]);
+    }
+    primeProds.push([EPS]);
+    productions[A]  = dedupeProds(newA);
+    productions[Ap] = dedupeProds(primeProds);
+    addNT(A, Ap);
+    removed++;
+    log.push({ step:'left-recursion',
+      text:`${A} had ${alphas.length} recursive alternative(s). Rewritten as:`,
+      detail:`${fmtProds(A, prods)}   ⇒   ${fmtProds(A, productions[A])}   and   ${fmtProds(Ap, productions[Ap])}` });
+  }
+  if(removed === 0) log.push({ step:'note', text:'No immediate left recursion found — nothing to eliminate.' });
+
+  /* ---- Step 2: left factoring (applied repeatedly) ---- */
+  log.push({ step:'note',
+    text:'Step 2 — left-factor common prefixes: every A → αβ₁ | αβ₂ | …  becomes  A → αA′ , A′ → β₁ | β₂ | …  (repeat until none remain)' });
+
+  const commonPrefixLen = (a, b) => {
+    let k = 0;
+    while(k < a.length && k < b.length && a[k] !== EPS && b[k] !== EPS && a[k] === b[k]) k++;
+    return k;
+  };
+
+  let factored = 0, guard = 0;
+  while(guard++ < 100){
+    let changedPass = false;
+    for(const A of [...nonterminals]){
+      const prods = productions[A] || [];
+      let bestLen = 0, bestPrefix = null;
+      for(let i = 0; i < prods.length; i++){
+        for(let j = i + 1; j < prods.length; j++){
+          const len = commonPrefixLen(prods[i], prods[j]);
+          if(len > bestLen){ bestLen = len; bestPrefix = prods[i].slice(0, len); }
+        }
+      }
+      if(!bestPrefix) continue;
+      const matching = prods.filter(p => commonPrefixLen(p, bestPrefix) === bestPrefix.length);
+      const rest     = prods.filter(p => commonPrefixLen(p, bestPrefix) !== bestPrefix.length);
+      const Ap = freshName(A, taken);
+      const primeProds = matching.map(p => {
+        const rem = p.slice(bestPrefix.length);
+        return rem.length ? rem : [EPS];
+      });
+      productions[A]  = dedupeProds([...rest, [...bestPrefix, Ap]]);
+      productions[Ap] = dedupeProds(primeProds);
+      addNT(A, Ap);
+      factored++;
+      changedPass = true;
+      log.push({ step:'factoring',
+        text:`${A} had ${matching.length} alternative(s) sharing the common prefix “${fmtAlt(bestPrefix)}”. Rewritten as:`,
+        detail:`${fmtProds(A, prods)}   ⇒   ${fmtProds(A, productions[A])}   and   ${fmtProds(Ap, productions[Ap])}` });
+    }
+    if(!changedPass) break;
+  }
+  if(factored === 0) log.push({ step:'note', text:'No common prefixes found — nothing to factor.' });
+
+  return { grammar: rebuildGrammar(productions, nonterminals, start), log };
+}
+
+function analyzeGrammar(grammar){
+  const { FIRST, firstOfSeq } = computeFirstSets(grammar);
+  const FOLLOW = computeFollowSets(grammar, FIRST, firstOfSeq);
+  const { table, conflicts } = buildParseTable(grammar, FIRST, FOLLOW, firstOfSeq);
+  return { FIRST, FOLLOW, table, conflicts };
+}
+
+/* ============================================================
    FIRST / FOLLOW / TABLE (generic, parameterized by grammar)
    ============================================================ */
 function isNT(grammar, s){ return grammar.nonterminals.includes(s); }
@@ -192,6 +340,7 @@ const els = {
   strInput: document.getElementById('strInput'),
   parseBtn: document.getElementById('parseBtn'),
   statusBanner: document.getElementById('statusBanner'),
+  transformCard: document.getElementById('transformCard'),
   analysisPanel: document.getElementById('analysisPanel'),
   resultPanel: document.getElementById('resultPanel'),
   stepBtn: document.getElementById('stepBtn'),
@@ -257,40 +406,41 @@ function renderTraceRow(step, idx, verdictAtEnd, total){
 }
 
 /* ---------- FIRST/FOLLOW + parse table display ---------- */
-function renderFirstFollowSets(grammar, FIRST, FOLLOW){
-  const tbody = document.querySelector('#firstFollowTable tbody');
-  tbody.innerHTML = '';
+function firstFollowTableHtml(grammar, FIRST, FOLLOW){
+  let html = '<table><thead><tr><th>Non-terminal</th><th>FIRST</th><th>FOLLOW</th></tr></thead><tbody>';
   grammar.nonterminals.forEach(nt => {
-    const tr = document.createElement('tr');
-    const firstStr = [...FIRST[nt]].join(', ');
-    const followStr = [...FOLLOW[nt]].join(', ');
-    tr.innerHTML = `<td>${nt}</td><td class="set-cell">{ ${firstStr} }</td><td class="set-cell">{ ${followStr} }</td>`;
-    tbody.appendChild(tr);
+    html += `<tr><td>${nt}</td><td class="set-cell">{ ${[...FIRST[nt]].join(', ')} }</td><td class="set-cell">{ ${[...FOLLOW[nt]].join(', ')} }</td></tr>`;
   });
+  return html + '</tbody></table>';
 }
-function renderParseTableDisplay(grammar, table, conflicts){
-  const thead = document.querySelector('#parseTableDisplay thead');
-  const tbody = document.querySelector('#parseTableDisplay tbody');
+function parseTableHtml(grammar, table, conflicts){
   const cols = [...grammar.terminals, '$'];
-  thead.innerHTML = `<tr><th>NT</th>${cols.map(c => `<th>${c}</th>`).join('')}</tr>`;
   const conflictSet = new Set(conflicts.map(c => c.nt + '|' + c.terminal));
-  tbody.innerHTML = '';
+  let html = `<table><thead><tr><th>NT</th>${cols.map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>`;
   grammar.nonterminals.forEach(nt => {
-    let rowHtml = `<td>${nt}</td>`;
+    let row = `<tr><td>${nt}</td>`;
     cols.forEach(t => {
       const cell = table[nt][t];
-      const isConflict = conflictSet.has(nt + '|' + t);
       if(cell){
         const text = cell.prods.map(p => `${nt}→${p.join(' ')}`).join(' / ');
-        rowHtml += `<td class="${isConflict ? 'conflict-cell' : 'rule-cell'}">${text}</td>`;
+        row += `<td class="${conflictSet.has(nt + '|' + t) ? 'conflict-cell' : 'rule-cell'}">${text}</td>`;
       } else {
-        rowHtml += `<td class="empty-cell">—</td>`;
+        row += `<td class="empty-cell">—</td>`;
       }
     });
-    const tr = document.createElement('tr');
-    tr.innerHTML = rowHtml;
-    tbody.appendChild(tr);
+    html += row + '</tr>';
   });
+  return html + '</tbody></table>';
+}
+function renderFirstFollowSets(grammar, FIRST, FOLLOW){
+  document.querySelector('#firstFollowTable').innerHTML = firstFollowTableHtml(grammar, FIRST, FOLLOW);
+}
+function renderParseTableDisplay(grammar, table, conflicts){
+  document.querySelector('#parseTableDisplay').innerHTML = parseTableHtml(grammar, table, conflicts);
+}
+function renderAnalysis(grammar, analysis){
+  renderFirstFollowSets(grammar, analysis.FIRST, analysis.FOLLOW);
+  renderParseTableDisplay(grammar, analysis.table, analysis.conflicts);
 }
 
 function showStep(idx){
@@ -345,37 +495,104 @@ function showBanner(kind, html){
 }
 function hideBanner(){ els.statusBanner.className = 'status-banner'; els.statusBanner.innerHTML=''; }
 
+/* ---------- Grammar transformation display ---------- */
+function conflictsDetail(conflicts){
+  return conflicts.map(c => `M[${c.nt}, ${c.terminal}] = { ${c.prods.map(p => `${c.nt} → ${p}`).join('  |  ')} }`).join('; ');
+}
+function renderTransformLog(log){
+  const container = document.getElementById('transformLog');
+  container.innerHTML = '';
+  log.forEach(entry => {
+    const div = document.createElement('div');
+    div.className = 'tl-entry tl-' + entry.step;
+    const tag = entry.step === 'left-recursion' ? 'left recursion'
+      : entry.step === 'factoring' ? 'left factoring'
+      : entry.step === 'warn' ? 'warning' : 'note';
+    let html = `<span class="tl-tag">${tag}</span><div class="tl-body">`;
+    html += `<div class="tl-text">${escapeHtml(entry.text)}</div>`;
+    if(entry.detail) html += `<div class="tl-detail">${escapeHtml(entry.detail)}</div>`;
+    html += '</div>';
+    div.innerHTML = html;
+    container.appendChild(div);
+  });
+}
+function renderAutoGrammar(autoGrammar, hasConflicts){
+  document.getElementById('autoGrammarView').textContent = grammarToString(autoGrammar);
+  const pill = document.getElementById('autoStatus');
+  if(hasConflicts){
+    pill.textContent = 'ambiguous — residual conflict';
+    pill.className = 'status-pill bad';
+  } else {
+    pill.textContent = 'LL(1) ✓';
+    pill.className = 'status-pill good';
+  }
+}
+function renderComparisonLeft(autoGrammar, analysis){
+  document.getElementById('autoCompareGrammar').textContent = grammarToString(autoGrammar);
+  document.getElementById('autoCompareSets').innerHTML = firstFollowTableHtml(autoGrammar, analysis.FIRST, analysis.FOLLOW);
+  document.getElementById('autoCompareTable').innerHTML = parseTableHtml(autoGrammar, analysis.table, analysis.conflicts);
+}
+function showResidualPanel(autoGrammar, analysis){
+  const box = document.getElementById('residualBox');
+  box.hidden = false;
+  renderComparisonLeft(autoGrammar, analysis);
+  const ta = document.getElementById('manualGrammarInput');
+  if(!ta.dataset.touched) ta.value = grammarToString(autoGrammar);
+  document.getElementById('manualResults').hidden = true;
+  const status = document.getElementById('manualStatus');
+  status.textContent = 'not yet applied';
+  status.className = 'status-pill neutral';
+}
+function hideResidualPanel(){
+  document.getElementById('residualBox').hidden = true;
+}
+
 function runParse(){
   stopPlay();
   els.resultPanel.style.display = 'none';
   els.analysisPanel.style.display = 'none';
+  els.transformCard.style.display = 'none';
   hideBanner();
 
-  let grammar;
+  let rawGrammar;
   try{
-    grammar = parseGrammarText(els.grammarInput.value);
+    rawGrammar = parseGrammarText(els.grammarInput.value);
   } catch(err){
-    showBanner('error', `<span>⚠</span><span><b>Couldn't read grammar:</b> ${err.message}</span>`);
+    showBanner('error', `<span>⚠</span><span><b>Couldn't read grammar:</b> ${escapeHtml(err.message)}</span>`);
     return;
   }
 
-  const { FIRST, firstOfSeq } = computeFirstSets(grammar);
-  const FOLLOW = computeFollowSets(grammar, FIRST, firstOfSeq);
-  const { table, conflicts } = buildParseTable(grammar, FIRST, FOLLOW, firstOfSeq);
+  const { grammar: autoGrammar, log } = transformGrammar(rawGrammar);
+  const analysis = analyzeGrammar(autoGrammar);
 
-  currentGrammar = grammar;
-  currentTable = table;
+  currentGrammar = autoGrammar;
+  currentTable = analysis.table;
 
-  renderFirstFollowSets(grammar, FIRST, FOLLOW);
-  renderParseTableDisplay(grammar, table, conflicts);
+  renderTransformLog(log);
+  renderAutoGrammar(autoGrammar, analysis.conflicts.length > 0);
+  renderAnalysis(autoGrammar, analysis);
+  els.transformCard.style.display = 'block';
   els.analysisPanel.style.display = 'block';
 
-  if(conflicts.length){
-    showBanner('error', `<span>⚠</span><span><b>Not LL(1) — ${conflicts.length} table conflict(s):</b> ` +
-      conflicts.map(c => `M[${c.nt}, ${c.terminal}] = { ${c.prods.map(p=>`${c.nt} → ${p}`).join('  |  ')} }`).join('; ') +
-      `. Parsing below uses the first-listed rule at each conflict, so results aren't guaranteed correct until the grammar is fixed (left-factor / remove left recursion / remove ambiguity).</span>`);
+  if(analysis.conflicts.length){
+    showResidualPanel(autoGrammar, analysis);
+    showBanner('error',
+      `<span>⚠</span><span><b>Residual ambiguity — requires manual grammar redesign.</b> ` +
+      `After auto-transformation the grammar still has ${analysis.conflicts.length} table conflict(s) ` +
+      `that mechanical left-recursion removal / left factoring cannot resolve (the alternatives genuinely overlap ` +
+      `in what they generate). Paste a redesigned equivalent grammar in the panel below and click “Apply”. ` +
+      `The parse below currently uses the first-listed rule at each conflict, so results aren't guaranteed correct yet. ` +
+      `${conflictsDetail(analysis.conflicts)}` +
+      `</span>`);
+  } else {
+    hideResidualPanel();
+    showBanner('ok', `<span>✓</span><span><b>LL(1) — no table conflicts.</b> The auto-transformed grammar is ready to parse.</span>`);
   }
 
+  runParseSession(autoGrammar, analysis.table);
+}
+
+function runParseSession(grammar, table){
   const tokens = tokenizeInput(els.strInput.value, grammar.terminals);
   const unknown = tokens.filter(t => !grammar.terminals.includes(t));
   if(unknown.length){
@@ -397,6 +614,40 @@ function runParse(){
   els.analysisPanel.scrollIntoView({behavior:'smooth', block:'start'});
 }
 
+function applyManualGrammar(){
+  const ta = document.getElementById('manualGrammarInput');
+  let manual;
+  try{
+    manual = parseGrammarText(ta.value);
+  } catch(err){
+    showBanner('error', `<span>⚠</span><span><b>Couldn't read the manual grammar:</b> ${escapeHtml(err.message)}</span>`);
+    return;
+  }
+  const analysis = analyzeGrammar(manual);
+
+  currentGrammar = manual;
+  currentTable = analysis.table;
+
+  document.getElementById('manualResults').hidden = false;
+  document.getElementById('manualCompareGrammar').textContent = grammarToString(manual);
+  document.getElementById('manualCompareSets').innerHTML = firstFollowTableHtml(manual, analysis.FIRST, analysis.FOLLOW);
+  document.getElementById('manualCompareTable').innerHTML = parseTableHtml(manual, analysis.table, analysis.conflicts);
+
+  const status = document.getElementById('manualStatus');
+  if(analysis.conflicts.length){
+    status.textContent = 'still ambiguous';
+    status.className = 'status-pill bad';
+    showBanner('error', `<span>⚠</span><span><b>Manual grammar still isn't LL(1)</b> — ${analysis.conflicts.length} conflict(s): ${conflictsDetail(analysis.conflicts)}</span>`);
+  } else {
+    status.textContent = 'LL(1) ✓';
+    status.className = 'status-pill good';
+    showBanner('ok', `<span>✓</span><span><b>Manual grammar is LL(1).</b> The FIRST/FOLLOW sets, table and parse below now use your redesigned grammar.</span>`);
+  }
+
+  renderAnalysis(manual, analysis);
+  runParseSession(manual, analysis.table);
+}
+
 function resetAll(){
   stopPlay();
   session = null; cursor = -1;
@@ -413,6 +664,8 @@ function resetAll(){
 
 els.parseBtn.addEventListener('click', runParse);
 els.strInput.addEventListener('keydown', e => { if(e.key === 'Enter') runParse(); });
+document.getElementById('applyManualBtn').addEventListener('click', applyManualGrammar);
+document.getElementById('manualGrammarInput').addEventListener('input', e => { e.target.dataset.touched = '1'; });
 els.prevBtn.addEventListener('click', () => { if(session) showStep(cursor - 1); });
 els.stepBtn.addEventListener('click', () => { if(session) showStep(cursor + 1); });
 els.playBtn.addEventListener('click', () => { playTimer ? stopPlay() : startPlay(); });
