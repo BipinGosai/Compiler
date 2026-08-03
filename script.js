@@ -189,6 +189,57 @@ function transformGrammar(grammar){
   return { grammar: rebuildGrammar(productions, nonterminals, start), log };
 }
 
+/* A suggested "manually redesigned" grammar: inlines nonterminals that are
+   referenced bare and have a single production, e.g.
+     A' -> A | ε   with   A -> a b A'   becomes   A' -> a b A' | ε
+   This is a conservative simplification that never changes the language and
+   usually reads as a cleaner LL(1) design (the "semantic simplification" step
+   a human would do by hand). Fallback: the input grammar unchanged. */
+function suggestManualGrammar(grammar){
+  try{
+    const prods = {};
+    grammar.nonterminals.forEach(nt => prods[nt] = grammar.productions[nt].map(p => [...p]));
+    const nts = [...grammar.nonterminals];
+    const isNT = s => nts.includes(s);
+
+    let changed = true, guard = 0;
+    while(changed && guard++ < 50){
+      changed = false;
+      for(const Y of nts){
+        if(Y === grammar.start) continue;
+        const pY = prods[Y] || [];
+        if(!pY.some(p => p.length === 1 && p[0] === EPS)) continue;
+        const rest = pY.filter(p => !(p.length === 1 && p[0] === EPS));
+        if(rest.length !== 1 || rest[0].length !== 1) continue;
+        const A = rest[0][0];
+        if(!isNT(A)) continue;
+        const pA = prods[A] || [];
+        if(pA.length !== 1) continue;
+        const gamma = pA[0];
+        if(gamma.length === 1 && gamma[0] === EPS) continue;
+        if(gamma[0] === Y) continue;
+        prods[Y] = dedupeProds([[...gamma], [EPS]]);
+        changed = true;
+      }
+    }
+
+    const reach = new Set([grammar.start]);
+    const stack = [grammar.start];
+    while(stack.length){
+      const nt = stack.pop();
+      for(const prod of prods[nt] || []){
+        for(const sym of prod){
+          if(isNT(sym) && !reach.has(sym)){ reach.add(sym); stack.push(sym); }
+        }
+      }
+    }
+    const finalNTs = nts.filter(nt => reach.has(nt));
+    return rebuildGrammar(prods, finalNTs, grammar.start);
+  }catch(err){
+    return grammar;
+  }
+}
+
 function analyzeGrammar(grammar){
   const { FIRST, firstOfSeq } = computeFirstSets(grammar);
   const FOLLOW = computeFollowSets(grammar, FIRST, firstOfSeq);
@@ -516,35 +567,31 @@ function renderTransformLog(log){
     container.appendChild(div);
   });
 }
-function renderAutoGrammar(autoGrammar, hasConflicts){
-  document.getElementById('autoGrammarView').textContent = grammarToString(autoGrammar);
-  const pill = document.getElementById('autoStatus');
-  if(hasConflicts){
-    pill.textContent = 'ambiguous — residual conflict';
-    pill.className = 'status-pill bad';
-  } else {
-    pill.textContent = 'LL(1) ✓';
-    pill.className = 'status-pill good';
-  }
-}
 function renderComparisonLeft(autoGrammar, analysis){
   document.getElementById('autoCompareGrammar').textContent = grammarToString(autoGrammar);
-  document.getElementById('autoCompareSets').innerHTML = firstFollowTableHtml(autoGrammar, analysis.FIRST, analysis.FOLLOW);
-  document.getElementById('autoCompareTable').innerHTML = parseTableHtml(autoGrammar, analysis.table, analysis.conflicts);
+  const detail = document.getElementById('autoCompareDetail');
+  if(analysis.conflicts.length){
+    document.getElementById('autoCompareSets').innerHTML = firstFollowTableHtml(autoGrammar, analysis.FIRST, analysis.FOLLOW);
+    document.getElementById('autoCompareTable').innerHTML = parseTableHtml(autoGrammar, analysis.table, analysis.conflicts);
+    detail.hidden = false;
+  } else {
+    detail.hidden = true;
+  }
+  const badge = document.getElementById('autoCompareStatus');
+  badge.textContent = analysis.conflicts.length ? 'still ambiguous' : 'LL(1) ✓';
+  badge.className = 'status-pill ' + (analysis.conflicts.length ? 'bad' : 'good');
 }
-function showResidualPanel(autoGrammar, analysis){
+function showComparison(autoGrammar, analysis){
   const box = document.getElementById('residualBox');
   box.hidden = false;
+  document.getElementById('residualBanner').hidden = analysis.conflicts.length === 0;
   renderComparisonLeft(autoGrammar, analysis);
   const ta = document.getElementById('manualGrammarInput');
-  if(!ta.dataset.touched) ta.value = grammarToString(autoGrammar);
+  if(!ta.dataset.touched) ta.value = grammarToString(suggestManualGrammar(autoGrammar));
   document.getElementById('manualResults').hidden = true;
   const status = document.getElementById('manualStatus');
-  status.textContent = 'not yet applied';
+  status.textContent = 'suggestion — apply to verify';
   status.className = 'status-pill neutral';
-}
-function hideResidualPanel(){
-  document.getElementById('residualBox').hidden = true;
 }
 
 function runParse(){
@@ -569,13 +616,12 @@ function runParse(){
   currentTable = analysis.table;
 
   renderTransformLog(log);
-  renderAutoGrammar(autoGrammar, analysis.conflicts.length > 0);
   renderAnalysis(autoGrammar, analysis);
   els.transformCard.style.display = 'block';
   els.analysisPanel.style.display = 'block';
+  showComparison(autoGrammar, analysis);
 
   if(analysis.conflicts.length){
-    showResidualPanel(autoGrammar, analysis);
     showBanner('error',
       `<span>⚠</span><span><b>Residual ambiguity — requires manual grammar redesign.</b> ` +
       `After auto-transformation the grammar still has ${analysis.conflicts.length} table conflict(s) ` +
@@ -585,7 +631,6 @@ function runParse(){
       `${conflictsDetail(analysis.conflicts)}` +
       `</span>`);
   } else {
-    hideResidualPanel();
     showBanner('ok', `<span>✓</span><span><b>LL(1) — no table conflicts.</b> The auto-transformed grammar is ready to parse.</span>`);
   }
 

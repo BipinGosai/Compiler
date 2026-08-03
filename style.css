@@ -266,6 +266,8 @@ tbody tr td{transition:background .3s ease, color .3s ease;}
   color:var(--text); font-family:'JetBrains Mono',monospace; font-size:12.5px; border-radius:8px; padding:10px;
   resize:vertical; outline:none; line-height:1.5;}
 .compare-col textarea#manualGrammarInput:focus{border-color:var(--amber);}
+.compare-suggest-note{color:var(--dim); font-size:10.5px; line-height:1.5; margin-top:8px;}
+.compare-detail{animation:panel-in .35s ease;}
 .compare-col .actions{margin:10px 0 0;}
 .manual-results{margin-top:12px; animation:panel-in .35s ease;}
 .compare-label{font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); font-weight:600;
